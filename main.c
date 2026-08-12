@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <threads.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 typedef struct {
@@ -11,16 +12,28 @@ typedef struct {
     long syscall_id;
     __u64 args[6];
 } Data;
+static FILE *logf;
 static int f(void *ctx, void *data, size_t data_sz) {
     Data *ini = data;
-    printf("=====================================\n");
-    printf("syscall pid: %u \ncpu core: %u \nsyscall id: %ld \ntime: %llu ns\n", ini->pid, ini->cpu_id, ini->syscall_id, ini->timestamp);
-    printf("=====================================\n");
+    fprintf(logf, "=====================================\n");
+    fprintf(logf, "syscall pid: %u \ncpu core: %u \nsyscall id: %ld \ntime: %llu ns\n", ini->pid, ini->cpu_id, ini->syscall_id, ini->timestamp);
+    fprintf(logf, "=====================================\n");
+    return 0;
+}
+static int poll_ringbuf(void *rb) {
+    while (ring_buffer__poll(rb, 100) >= 0)
+        ;
     return 0;
 }
 int main() {
     struct bpf_object *obj;
     int err;
+    logf = fopen("monitor.log", "a");
+    if (!logf) {
+        perror("monitor.log");
+        return 1;
+    }
+    setlinebuf(logf);
     obj = bpf_object__open_file("monitor.bpf.o", NULL);
     if (!obj) {
         printf("Tidak bisa membuka monitor.bpf.o\n");
@@ -43,8 +56,9 @@ int main() {
     __u32 key_sys = 0;
     __u32 key_sched = 1;
     struct ring_buffer *rb = ring_buffer__new(data_map_fd, f, NULL, NULL);
+    thrd_t rb_thread;
+    thrd_create(&rb_thread, poll_ringbuf, rb);
     while (1) {
-        err = ring_buffer__poll(rb, 100);
         sleep(1);
         bpf_map_lookup_elem(count_map_fd, &key_sys, syscall_vals);
         bpf_map_lookup_elem(count_map_fd, &key_sched, sched_vals);
@@ -54,6 +68,7 @@ int main() {
         }
         printf("=====================================\n");
     }
+    thrd_join(rb_thread, NULL);
     ring_buffer__free(rb);
     bpf_object__close(obj);
     return 0;
