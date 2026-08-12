@@ -12,7 +12,19 @@ typedef struct {
     long syscall_id;
     __u64 args[6];
 } Data;
+typedef struct {
+    __u32 pid;
+    char name[16];
+    __u64 address;
+}Fault;
 static FILE *logf;
+static int f2(void *ctx, void *data, size_t data_sz) {
+    Fault *ini = data;
+    fprintf(logf, "=====================================\n");
+    fprintf(logf, "page fault pid: %u \naddress: %llu \nprocess: %s\n", ini->pid, ini->address, ini->name);
+    fprintf(logf, "=====================================\n");
+    return 0;
+}
 static int f(void *ctx, void *data, size_t data_sz) {
     Data *ini = data;
     fprintf(logf, "=====================================\n");
@@ -50,14 +62,17 @@ int main() {
     }
     int count_map_fd = bpf_object__find_map_fd_by_name(obj, "count_map");
     int data_map_fd = bpf_object__find_map_fd_by_name(obj, "data_map");
+    int fault_map_fd = bpf_object__find_map_fd_by_name(obj, "fault_map");
     int num_cpus = libbpf_num_possible_cpus();
     __u64 syscall_vals[num_cpus];
     __u64 sched_vals[num_cpus];
     __u32 key_sys = 0;
     __u32 key_sched = 1;
     struct ring_buffer *rb = ring_buffer__new(data_map_fd, f, NULL, NULL);
+    struct ring_buffer *rb2 = ring_buffer__new(fault_map_fd, f2, NULL, NULL);
+
     thrd_t rb_thread;
-    thrd_create(&rb_thread, poll_ringbuf, rb);
+    thrd_create(&rb_thread, poll_ringbuf, rb2);
     while (1) {
         sleep(1);
         bpf_map_lookup_elem(count_map_fd, &key_sys, syscall_vals);

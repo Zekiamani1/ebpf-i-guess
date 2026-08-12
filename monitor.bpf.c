@@ -31,6 +31,7 @@ int handle_sys_enter(struct trace_event_raw_sys_enter *ctx) {
         data->cpu_id = bpf_get_smp_processor_id();
         data->timestamp = bpf_ktime_get_ns();
         data->syscall_id = ctx->id;
+        bpf_get_current_comm(&data->name, sizeof(data->name));
         bpf_ringbuf_submit(data, 0);
     }
     return 0;
@@ -46,3 +47,26 @@ int handle_sched_switch(void *ctx) {
     return 0;
 }
 char _license[] SEC("license") = "GPL";
+
+struct Fault {
+    __u32 pid;
+    char name[16];
+    __u64 address;
+};
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} fault_map SEC(".maps");
+SEC("kprobe/handle_mm_fault")
+int BPF_KPROBE(handle_mm_fault_entry, struct vm_area_struct *vma, unsigned long address, unsigned int flags) {
+    struct Fault *fault;
+    bpf_ringbuf_reserve(&fault_map, sizeof(*fault), 0);
+
+    fault->pid = bpf_get_current_pid_tgid() >> 32;
+    bpf_get_current_comm(&fault->name, sizeof(fault->name));
+    fault->address = (__u64)address; 
+
+    bpf_ringbuf_submit(fault, 0);
+
+    return 0;
+}
