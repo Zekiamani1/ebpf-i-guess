@@ -9,13 +9,13 @@ struct Data {
     __u64 args[6];
 };
 struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 2);
     __type(key, __u32);
     __type(value, __u64);
 } count_map SEC(".maps");
 struct {
-    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } data_map SEC(".maps");
 
