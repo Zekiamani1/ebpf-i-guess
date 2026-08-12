@@ -9,7 +9,7 @@ struct Data {
     __u64 args[6];
 };
 struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 2);
     __type(key, __u32);
     __type(value, __u64);
@@ -40,7 +40,7 @@ SEC("tp/sched/sched_switch")
 int handle_sched_switch(void *ctx) {
     __u32 key = 1; 
     __u64 *count = bpf_map_lookup_elem(&count_map, &key);
-    if (data) {
+    if (count) {
         *count += 1; 
     }
     return 0;
