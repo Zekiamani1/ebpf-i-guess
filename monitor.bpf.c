@@ -69,3 +69,4 @@ int BPF_PROG(rate_limit_write, struct file *file, int mask){
     }
     return 0;
 }
+char _license[] SEC("license") = "GPL";
