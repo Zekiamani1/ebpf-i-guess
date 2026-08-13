@@ -79,7 +79,7 @@ int main() {
         bpf_map_lookup_elem(count_map_fd, &key_sched, sched_vals);
         printf("=====================================\n");
         for (int i = 0; i < num_cpus; i++) {
-            printf("CPU Core %d \nSyscalls: %llu \nContext Switches: %llu\n", i, syscall_vals[i], sched_vals[i]);
+            printf("CPU Core %d \nWrite: %llu \nContext Switches: %llu\n", i, syscall_vals[i], sched_vals[i]);
         }
         printf("=====================================\n");
     }

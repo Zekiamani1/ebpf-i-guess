@@ -3,7 +3,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include <asm-generic/errno-base.h>
-#define MAX_SYSCALL_PER_SEC 100
+#define MAX_SYSCALL_PER_SEC 10
 #define ONE_SEC 1000000000ULL
 struct Data {
     __u32 pid;
@@ -23,61 +23,6 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } data_map SEC(".maps");
-
-SEC("tp/raw_syscalls/sys_enter")
-int handle_sys_enter(struct trace_event_raw_sys_enter *ctx) {
-    __u32 key = 0;
-    struct Data *data;
-    data = bpf_ringbuf_reserve(&data_map, sizeof(*data), 0);
-    __u64 *count = bpf_map_lookup_elem(&count_map, &key);
-    if (count)
-    {
-        *count += 1;
-    }
-    if (data) {
-        data->pid = bpf_get_current_pid_tgid() >> 32;
-        data->cpu_id = bpf_get_smp_processor_id();
-        data->timestamp = bpf_ktime_get_ns();
-        data->syscall_id = ctx->id;
-        bpf_get_current_comm(&data->name, sizeof(data->name));
-        bpf_ringbuf_submit(data, 0);
-    }
-    return 0;
-}
-
-SEC("tp/sched/sched_switch")
-int handle_sched_switch(void *ctx) {
-    __u32 key = 1; 
-    __u64 *count = bpf_map_lookup_elem(&count_map, &key);
-    if (count) {
-        *count += 1; 
-    }
-    return 0;
-}
-char _license[] SEC("license") = "GPL";
-
-struct Fault {
-    __u32 pid;
-    char name[16];
-    __u64 address;
-};
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
-} fault_map SEC(".maps");
-SEC("kprobe/handle_mm_fault")
-int BPF_KPROBE(handle_mm_fault_entry, struct vm_area_struct *vma, unsigned long address, unsigned int flags) {
-    struct Fault *fault;
-    fault = bpf_ringbuf_reserve(&fault_map, sizeof(*fault), 0);
-    if (!fault) return 0;
-    fault->pid = bpf_get_current_pid_tgid() >> 32;
-    bpf_get_current_comm(&fault->name, sizeof(fault->name));
-    fault->address = (__u64) address; 
-
-    bpf_ringbuf_submit(fault, 0);
-
-    return 0;
-}
 struct rate_limit_state {
     __u64 start;
     __u64 count;
@@ -92,6 +37,11 @@ struct {
 
 SEC("lsm/file_permission")
 int BPF_PROG(rate_limit_write, struct file *file, int mask){
+    __u32 key = 0; 
+    __u64 *count = bpf_map_lookup_elem(&count_map, &key);
+    if (count) {
+        *count += 1; 
+    }
     if (!(mask & 0x02)) { //0x02 = mask write
         return 0;
     }
