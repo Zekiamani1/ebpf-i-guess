@@ -3,8 +3,6 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include <asm-generic/errno-base.h>
-#define MAX_SYSCALL_PER_SEC 100
-#define ONE_SEC 1000000000ULL
 struct Data {
     __u32 pid;
     char name[16];
@@ -19,10 +17,20 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
 } count_map SEC(".maps");
+struct Sched {
+    __u32 pid;
+    char name[16];
+    __u32 cpu_id;
+    __u64 timestamp;
+};
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } data_map SEC(".maps");
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
+} sched_map SEC(".maps");
 
 SEC("tp/raw_syscalls/sys_enter")
 int handle_sys_enter(struct trace_event_raw_sys_enter *ctx) {
@@ -47,75 +55,19 @@ int handle_sys_enter(struct trace_event_raw_sys_enter *ctx) {
 
 SEC("tp/sched/sched_switch")
 int handle_sched_switch(void *ctx) {
-    __u32 key = 1; 
+    __u32 key = 1;
     __u64 *count = bpf_map_lookup_elem(&count_map, &key);
     if (count) {
-        *count += 1; 
+        *count += 1;
+    }
+    struct Sched *sched = bpf_ringbuf_reserve(&sched_map, sizeof(*sched), 0);
+    if (sched) {
+        sched->pid = bpf_get_current_pid_tgid() >> 32;
+        sched->cpu_id = bpf_get_smp_processor_id();
+        sched->timestamp = bpf_ktime_get_ns();
+        bpf_get_current_comm(&sched->name, sizeof(sched->name));
+        bpf_ringbuf_submit(sched, 0);
     }
     return 0;
 }
 char _license[] SEC("license") = "GPL";
-
-struct Fault {
-    __u32 pid;
-    char name[16];
-    __u64 address;
-};
-struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
-} fault_map SEC(".maps");
-SEC("kprobe/handle_mm_fault")
-int BPF_KPROBE(handle_mm_fault_entry, struct vm_area_struct *vma, unsigned long address, unsigned int flags) {
-    struct Fault *fault;
-    fault = bpf_ringbuf_reserve(&fault_map, sizeof(*fault), 0);
-    if (!fault) return 0;
-    fault->pid = bpf_get_current_pid_tgid() >> 32;
-    bpf_get_current_comm(&fault->name, sizeof(fault->name));
-    fault->address = (__u64) address; 
-
-    bpf_ringbuf_submit(fault, 0);
-
-    return 0;
-}
-struct rate_limit_state {
-    __u64 start;
-    __u64 count;
-};
-
-struct {
-    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
-    __uint(max_entries, 10240);
-    __type(key, __u32);
-    __type(value, struct rate_limit_state);
-} rate_limit_map SEC(".maps");
-
-SEC("lsm/file_permission")
-int BPF_PROG(rate_limit_write, struct file *file, int mask){
-    if (!(mask & 0x02)) { //0x02 = mask write
-        return 0;
-    }
-    __u32 pid = bpf_get_current_pid_tgid() >> 32;
-    if (pid == 0) return 0;
-    __u64 now = bpf_ktime_get_ns();
-    struct rate_limit_state *state = bpf_map_lookup_elem(&rate_limit_map, &pid);
-    if (!state) {
-        struct rate_limit_state new_state = {
-            .start = now,
-            .count = 1
-        };
-        bpf_map_update_elem(&rate_limit_map, &pid, &new_state, BPF_ANY);
-        return 0;
-    }
-    if (now - state->start >= ONE_SEC) {
-        //reset
-        state->start = now;
-        state->count = 1;
-    } else if (state->count >= MAX_SYSCALL_PER_SEC) {
-        //tolak syscall
-        return -EAGAIN;
-    } else{
-        state->count++;
-    }
-    return 0;
-}
