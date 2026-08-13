@@ -1,6 +1,9 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <asm-generic/errno-base.h>
+#define MAX_SYSCALL_PER_SEC 100
+#define ONE_SEC 1000000000ULL
 struct Data {
     __u32 pid;
     char name[16];
@@ -69,5 +72,44 @@ int BPF_KPROBE(handle_mm_fault_entry, struct vm_area_struct *vma, unsigned long 
 
     bpf_ringbuf_submit(fault, 0);
 
+    return 0;
+}
+struct rate_limit_state {
+    __u64 start;
+    __u64 count;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 10240);
+    __type(key, __u32);
+    __type(value, struct rate_limit_state);
+} rate_limit_map SEC(".maps");
+
+SEC("kprobe/__x64_sys_write")
+int BPF_KPROBE_SYSCALL(limit_sys_write, unsigned int fd, const char *buf, size_t count) {
+    if (fd != 1) return 0;
+    __u32 pid = bpf_get_current_pid_tgid() >> 32;
+    if (pid == 0) return 0;
+    __u64 now = bpf_ktime_get_ns();
+    struct rate_limit_state *state = bpf_map_lookup_elem(&rate_limit_map, &pid);
+    if (!state) {
+        struct rate_limit_state new_state = {
+            .start = now,
+            .count = 1
+        };
+        bpf_map_update_elem(&rate_limit_map, &pid, &new_state, BPF_ANY);
+        return 0;
+    }
+    if (now - state->start >= ONE_SEC) {
+        //reset
+        state->start = now;
+        state->count = 1;
+    } else if (state->count >= MAX_SYSCALL_PER_SEC) {
+        //tolak syscall
+        bpf_override_return(ctx, -EAGAIN);
+    } else{
+        state->count++;
+    }
     return 0;
 }
