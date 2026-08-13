@@ -1,6 +1,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 #include <asm-generic/errno-base.h>
 #define MAX_SYSCALL_PER_SEC 100
 #define ONE_SEC 1000000000ULL
@@ -29,8 +30,11 @@ int handle_sys_enter(struct trace_event_raw_sys_enter *ctx) {
     struct Data *data;
     data = bpf_ringbuf_reserve(&data_map, sizeof(*data), 0);
     __u64 *count = bpf_map_lookup_elem(&count_map, &key);
-    if (data) {
+    if (count)
+    {
         *count += 1;
+    }
+    if (data) {
         data->pid = bpf_get_current_pid_tgid() >> 32;
         data->cpu_id = bpf_get_smp_processor_id();
         data->timestamp = bpf_ktime_get_ns();
@@ -86,8 +90,8 @@ struct {
     __type(value, struct rate_limit_state);
 } rate_limit_map SEC(".maps");
 
-SEC("kprobe/__x64_sys_write")
-int BPF_KPROBE_SYSCALL(limit_sys_write, unsigned int fd, const char *buf, size_t count) {
+SEC("fmod_ret/__x64_sys_write")
+int BPF_PROG(limit_sys_write, unsigned int fd, const char *buf, size_t count_bytes) {
     if (fd != 1) return 0;
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     if (pid == 0) return 0;
