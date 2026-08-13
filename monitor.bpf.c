@@ -90,9 +90,11 @@ struct {
     __type(value, struct rate_limit_state);
 } rate_limit_map SEC(".maps");
 
-SEC("fmod_ret/__x64_sys_write")
-int BPF_PROG(limit_sys_write, unsigned int fd, const char *buf, size_t count_bytes) {
-    if (fd != 1) return 0;
+SEC("lsm/file_permission")
+int BPF_PROG(rate_limit_write, struct file *file, int mask){
+    if (!(mask & 0x02)) { //0x02 = mask write
+        return 0;
+    }
     __u32 pid = bpf_get_current_pid_tgid() >> 32;
     if (pid == 0) return 0;
     __u64 now = bpf_ktime_get_ns();
