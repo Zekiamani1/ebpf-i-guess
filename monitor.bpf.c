@@ -111,7 +111,7 @@ int BPF_PROG(limit_sys_write, unsigned int fd, const char *buf, size_t count_byt
         state->count = 1;
     } else if (state->count >= MAX_SYSCALL_PER_SEC) {
         //tolak syscall
-        bpf_override_return(ctx, -EAGAIN);
+        return -EAGAIN;
     } else{
         state->count++;
     }
