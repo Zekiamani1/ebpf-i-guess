@@ -72,7 +72,8 @@ static struct bpf_object *load_bpf(const char *path) {
     }
     struct bpf_program *prog;
     bpf_object__for_each_program(prog, obj) {
-        bpf_program__attach(prog);
+        if (!bpf_program__attach(prog))
+            printf("Gagal attach %s (%s)\n", bpf_program__name(prog), path);
     }
     return obj;
 }
@@ -92,14 +93,15 @@ int main(int argc, char **argv) {
 
     struct bpf_object *monitor = load_bpf("monitor.bpf.o");
     int count_map_fd = bpf_object__find_map_fd_by_name(monitor, "count_map");
-    struct ring_buffer *rb = ring_buffer__new(bpf_object__find_map_fd_by_name(monitor, "data_map"), on_syscall, NULL, NULL);
-    ring_buffer__add(rb, bpf_object__find_map_fd_by_name(monitor, "sched_map"), on_sched, NULL);
+    struct ring_buffer *rb_syscall = ring_buffer__new(bpf_object__find_map_fd_by_name(monitor, "data_map"), on_syscall, NULL, NULL);
+    struct ring_buffer *rb_sched = ring_buffer__new(bpf_object__find_map_fd_by_name(monitor, "sched_map"), on_sched, NULL, NULL);
+    struct ring_buffer *rb_fault = NULL;
 
     struct bpf_object *fault = NULL, *ratelimit = NULL;
     if (want_fault) {
         fault_log = open_log("fault.log");
         fault = load_bpf("page_fault.bpf.o");
-        ring_buffer__add(rb, bpf_object__find_map_fd_by_name(fault, "fault_map"), on_fault, NULL);
+        rb_fault = ring_buffer__new(bpf_object__find_map_fd_by_name(fault, "fault_map"), on_fault, NULL, NULL);
     }
     if (want_ratelimit)
         ratelimit = load_bpf("rate_limit.bpf.o");
@@ -112,8 +114,10 @@ int main(int argc, char **argv) {
     __u32 key_sys = 0;
     __u32 key_sched = 1;
 
-    thrd_t rb_thread;
-    thrd_create(&rb_thread, poll_ringbuf, rb);
+    thrd_t syscall_thread, sched_thread, fault_thread;
+    thrd_create(&syscall_thread, poll_ringbuf, rb_syscall);
+    thrd_create(&sched_thread, poll_ringbuf, rb_sched);
+    if (rb_fault) thrd_create(&fault_thread, poll_ringbuf, rb_fault);
     while (1) {
         sleep(1);
         bpf_map_lookup_elem(count_map_fd, &key_sys, syscall_vals);
@@ -125,8 +129,12 @@ int main(int argc, char **argv) {
         }
         printf("=====================================\n");
     }
-    thrd_join(rb_thread, NULL);
-    ring_buffer__free(rb);
+    thrd_join(syscall_thread, NULL);
+    thrd_join(sched_thread, NULL);
+    if (rb_fault) thrd_join(fault_thread, NULL);
+    ring_buffer__free(rb_syscall);
+    ring_buffer__free(rb_sched);
+    ring_buffer__free(rb_fault);
     bpf_object__close(monitor);
     if (fault) bpf_object__close(fault);
     if (ratelimit) bpf_object__close(ratelimit);
