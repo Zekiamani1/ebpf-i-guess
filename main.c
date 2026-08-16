@@ -24,7 +24,22 @@ typedef struct {
     char name[16];
     __u64 address;
 }Fault;
-static FILE *syscall_log, *sched_log, *fault_log;
+typedef struct {
+    __u32 pid;
+    int fd;
+    __u64 count;
+    char buffer[256];
+} Write;
+static FILE *syscall_log, *sched_log, *fault_log, *write_log;
+static __u32 self_pid;
+static int on_write(void *ctx, void *data, size_t data_sz) {
+    Write *ini = data;
+    if (ini->pid == self_pid) return 0;      //jangan log tulisan main sendiri, nanti loop tak berhenti
+    fprintf(write_log, "=====================================\n");
+    fprintf(write_log, "write pid: %u \nfd: %d \ncount: %llu \ndata: %s\n", ini->pid, ini->fd, ini->count, ini->buffer);
+    fprintf(write_log, "=====================================\n");
+    return 0;
+}
 static int on_fault(void *ctx, void *data, size_t data_sz) {
     Fault *ini = data;
     fprintf(fault_log, "=====================================\n");
@@ -78,15 +93,18 @@ static struct bpf_object *load_bpf(const char *path) {
     return obj;
 }
 int main(int argc, char **argv) {
-    int want_ratelimit = 0, want_fault = 0;
+    int want_ratelimit = 0, want_fault = 0, want_kprobe = 0, want_fentry = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--ratelimit")) want_ratelimit = 1;
         else if (!strcmp(argv[i], "--fault")) want_fault = 1;
+        else if (!strcmp(argv[i], "--kprobe")) want_kprobe = 1;
+        else if (!strcmp(argv[i], "--fentry")) want_fentry = 1;
         else {
-            printf("Penggunaan: %s [--ratelimit] [--fault]\n", argv[0]);
+            printf("Penggunaan: %s [--ratelimit] [--fault] [--kprobe] [--fentry]\n", argv[0]);
             return 1;
         }
     }
+    self_pid = getpid();
 
     syscall_log = open_log("syscall.log");
     sched_log = open_log("context_switch.log");
@@ -95,13 +113,23 @@ int main(int argc, char **argv) {
     int count_map_fd = bpf_object__find_map_fd_by_name(monitor, "count_map");
     struct ring_buffer *rb_syscall = ring_buffer__new(bpf_object__find_map_fd_by_name(monitor, "data_map"), on_syscall, NULL, NULL);
     struct ring_buffer *rb_sched = ring_buffer__new(bpf_object__find_map_fd_by_name(monitor, "sched_map"), on_sched, NULL, NULL);
-    struct ring_buffer *rb_fault = NULL;
+    struct ring_buffer *rb_fault = NULL, *rb_kprobe = NULL, *rb_fentry = NULL;
 
-    struct bpf_object *fault = NULL, *ratelimit = NULL;
+    struct bpf_object *fault = NULL, *ratelimit = NULL, *kprobe = NULL, *fentry = NULL;
     if (want_fault) {
         fault_log = open_log("fault.log");
         fault = load_bpf("page_fault.bpf.o");
         rb_fault = ring_buffer__new(bpf_object__find_map_fd_by_name(fault, "fault_map"), on_fault, NULL, NULL);
+    }
+    if (want_kprobe || want_fentry)
+        write_log = open_log("syscall_write.log");
+    if (want_kprobe) {
+        kprobe = load_bpf("write_kprobe.bpf.o");
+        rb_kprobe = ring_buffer__new(bpf_object__find_map_fd_by_name(kprobe, "write_map"), on_write, NULL, NULL);
+    }
+    if (want_fentry) {
+        fentry = load_bpf("write_fentry.bpf.o");
+        rb_fentry = ring_buffer__new(bpf_object__find_map_fd_by_name(fentry, "write_map"), on_write, NULL, NULL);
     }
     if (want_ratelimit)
         ratelimit = load_bpf("rate_limit.bpf.o");
@@ -114,10 +142,12 @@ int main(int argc, char **argv) {
     __u32 key_sys = 0;
     __u32 key_sched = 1;
 
-    thrd_t syscall_thread, sched_thread, fault_thread;
+    thrd_t syscall_thread, sched_thread, fault_thread, kprobe_thread, fentry_thread;
     thrd_create(&syscall_thread, poll_ringbuf, rb_syscall);
     thrd_create(&sched_thread, poll_ringbuf, rb_sched);
     if (rb_fault) thrd_create(&fault_thread, poll_ringbuf, rb_fault);
+    if (rb_kprobe) thrd_create(&kprobe_thread, poll_ringbuf, rb_kprobe);
+    if (rb_fentry) thrd_create(&fentry_thread, poll_ringbuf, rb_fentry);
     while (1) {
         sleep(1);
         bpf_map_lookup_elem(count_map_fd, &key_sys, syscall_vals);
@@ -132,11 +162,17 @@ int main(int argc, char **argv) {
     thrd_join(syscall_thread, NULL);
     thrd_join(sched_thread, NULL);
     if (rb_fault) thrd_join(fault_thread, NULL);
+    if (rb_kprobe) thrd_join(kprobe_thread, NULL);
+    if (rb_fentry) thrd_join(fentry_thread, NULL);
     ring_buffer__free(rb_syscall);
     ring_buffer__free(rb_sched);
     ring_buffer__free(rb_fault);
+    ring_buffer__free(rb_kprobe);
+    ring_buffer__free(rb_fentry);
     bpf_object__close(monitor);
     if (fault) bpf_object__close(fault);
     if (ratelimit) bpf_object__close(ratelimit);
+    if (kprobe) bpf_object__close(kprobe);
+    if (fentry) bpf_object__close(fentry);
     return 0;
 }

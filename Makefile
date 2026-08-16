@@ -1,4 +1,4 @@
-BPF_OBJS = monitor.bpf.o page_fault.bpf.o rate_limit.bpf.o
+BPF_OBJS = monitor.bpf.o page_fault.bpf.o rate_limit.bpf.o write_kprobe.bpf.o write_fentry.bpf.o
 
 all: main $(BPF_OBJS)
 
